@@ -27,8 +27,7 @@ const ownerStripeId = req.body.ownerStripeId || "acct_1TfhPP3vJCB9s3Ln";
             currency: 'eur',
             product_data: {
               name: `Бронирование: ${propertyName}`,
-            },
-            unit_amount: amountTotal, // Сумма в центах (например, 100 евро = 10000)
+            },unit_amount: 100, // 1 евро для теста
           },
           quantity: 1,
         },
