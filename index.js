@@ -14,70 +14,56 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 // ==========================================
 // ДВЕРЬ №1: Создание ссылки на оплату (Сплит 10/90)
 // ==========================================
-app.post('/api/create-checkout-session', async (req, res) => {
-  try {
-    const { amountTotal, bookingId, propertyName, propertyId } = req.body;
-
-    const splitProperties = {
-      "41254": "acct_1TfhPP3vJCB9s3Ln"
-    };
-
-    const ownerStripeId = splitProperties[propertyId];
-
-    const sessionData = {
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'eur',
-            product_data: {
-              name: `Бронирование: ${propertyName || 'Апартаменты'}`,
-            },
-            unit_amount: amountTotal || 100,
-          },
-          quantity: 1,
-        },
-      ],
-      mode: 'payment',
-      success_url: req.body.success_url || 'https://example.com/success',
-      cancel_url: req.body.cancel_url || 'https://example.com/cancel',
-    };
-
-    if (ownerStripeId) {
-      const platformFee = Math.round((amountTotal || 100) * 0.10);
-      sessionData.payment_intent_data = {
-        application_fee_amount: platformFee,
-        transfer_data: {
-          destination: ownerStripeId,
-        },
-      };
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionData);
-    res.json({ url: session.url });
-
-  } catch (error) {
-    console.error('Ошибка создания сессии Stripe:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-        metadata: {
-          bookingId: bookingId,
-          platformShare: platformFee,
-          ownerShare: ownerAmount
+app.post('/create-checkout-session', async (req, res) => {
+    try {
+        const { amountTotal, propertyName, ownerStripeId, bookingId } = req.body;
+        
+        if (!amountTotal || !ownerStripeId) {
+            return res.status(400).json({ error: 'Missing required parameters: amountTotal or ownerStripeId' });
         }
-      },
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/cancel`,
-    });
 
-    res.json({ id: session.id, url: session.url });
-  } catch (error) {
-    console.error('Ошибка создания платежа:', error.message);
-    res.status(500).json({ error: error.message });
-  }
+        const platformFee = Math.round(amountTotal * 0.10);
+        const ownerAmount = amountTotal - platformFee;
+
+        const sessionData = {
+            payment_method_types: ['card'],
+            line_items: [{
+                price_data: {
+                    currency: 'eur',
+                    product_data: {
+                        name: `Бронирование: ${propertyName || 'Апартаменты'}`,
+                    },
+                    unit_amount: amountTotal,
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}` : 'https://example.com/success',
+            cancel_url: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/cancel` : 'https://example.com/cancel',
+            metadata: {
+                bookingId: bookingId || 'N/A',
+                platformShare: platformFee,
+                ownerShare: ownerAmount
+            }
+        };
+
+        if (ownerStripeId) {
+            sessionData.payment_intent_data = {
+                application_fee_amount: platformFee,
+                transfer_data: {
+                    destination: ownerStripeId,
+                },
+            };
+        }
+
+        const session = await stripe.checkout.sessions.create(sessionData);
+        res.json({ id: session.id, url: session.url });
+    } catch (error) {
+        console.error('Ошибка создания платежа:', error.message);
+        res.status(500).json({ error: error.message });
+    }
 });
+
 
 
 // ==========================================
