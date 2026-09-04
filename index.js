@@ -1,5 +1,8 @@
 const express = require('express');
 const app = express();
+app.get('/', (req, res) => {
+  res.send('Smoobu Backend is running!');
+});
 
 // ВАЖНО для Вебхуков (Код №2): Stripe требует "сырые" данные (Buffer), 
 // поэтому для маршрута вебхука мы используем express.raw, а для остального сайта — express.json
