@@ -85,9 +85,13 @@ app.post('/api/webhook', async (req, res) => {
   // Обязательно говорим Stripe: "Спасибо, сигнал принят, всё ок"
   res.json({ received: true });
 });
+app.all('/api/webhooks/smoobu', (req, res) => {
+  res.status(200).send('OK');
+});
 
 // Запуск сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
 });
+
