@@ -12,18 +12,15 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 // ДВЕРЬ №1: Создание ссылки на оплату (Сплит 10/90)
 // ==========================================
 app.post('/api/create-checkout-session', async (req, res) => {
- app.post('/api/create-checkout-session', async (req, res) => {
   try {
     const { amountTotal, bookingId, propertyName, propertyId } = req.body;
 
-    // Словарь объектов, для которых нужен сплит-платеж (10/90)
     const splitProperties = {
-      "41254": "acct_1TfhPP3vJCB9s3Ln" // Penthouse on the beach Madeira
+      "41254": "acct_1TfhPP3vJCB9s3Ln"
     };
 
     const ownerStripeId = splitProperties[propertyId];
 
-    // Базовые параметры сессии Stripe
     const sessionData = {
       payment_method_types: ['card'],
       line_items: [
@@ -33,7 +30,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
             product_data: {
               name: `Бронирование: ${propertyName || 'Апартаменты'}`,
             },
-            unit_amount: amountTotal || 100, // Если сумма не пришла, для теста ставим 1 евро
+            unit_amount: amountTotal || 100,
           },
           quantity: 1,
         },
@@ -43,9 +40,8 @@ app.post('/api/create-checkout-session', async (req, res) => {
       cancel_url: req.body.cancel_url || 'https://example.com/cancel',
     };
 
-    // Если объект найден в словаре сплита — добавляем перенаправление 10/90
     if (ownerStripeId) {
-      const platformFee = Math.round((amountTotal || 100) * 0.10); // Ваши 10%
+      const platformFee = Math.round((amountTotal || 100) * 0.10);
       sessionData.payment_intent_data = {
         application_fee_amount: platformFee,
         transfer_data: {
