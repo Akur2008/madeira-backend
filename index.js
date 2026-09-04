@@ -86,7 +86,7 @@ app.post('/api/webhook', async (req, res) => {
   res.json({ received: true });
 });
 app.all('/api/webhooks/smoobu', (req, res) => {
-  res.status(200).send('OK');
+  res.status(200).json({ status: 'ok' });
 });
 
 // Запуск сервера
