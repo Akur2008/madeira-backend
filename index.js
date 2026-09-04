@@ -12,32 +12,57 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 // ДВЕРЬ №1: Создание ссылки на оплату (Сплит 10/90)
 // ==========================================
 app.post('/api/create-checkout-session', async (req, res) => {
-  try {const { amountTotal, bookingId, propertyName } = req.body;
-const ownerStripeId = req.body.ownerStripeId || "acct_1TfhPP3vJCB9s3Ln";
+ app.post('/api/create-checkout-session', async (req, res) => {
+  try {
+    const { amountTotal, bookingId, propertyName, propertyId } = req.body;
 
-    // Считаем: 10% вам, 90% владельцу
-    const platformFee = Math.round(amountTotal * 0.10); 
-    const ownerAmount = amountTotal - platformFee;     
+    // Словарь объектов, для которых нужен сплит-платеж (10/90)
+    const splitProperties = {
+      "41254": "acct_1TfhPP3vJCB9s3Ln" // Penthouse on the beach Madeira
+    };
 
-    const session = await stripe.checkout.sessions.create({
+    const ownerStripeId = splitProperties[propertyId];
+
+    // Базовые параметры сессии Stripe
+    const sessionData = {
       payment_method_types: ['card'],
       line_items: [
         {
           price_data: {
             currency: 'eur',
             product_data: {
-              name: `Бронирование: ${propertyName}`,
-            },unit_amount: 100, // 1 евро для теста
+              name: `Бронирование: ${propertyName || 'Апартаменты'}`,
+            },
+            unit_amount: amountTotal || 100, // Если сумма не пришла, для теста ставим 1 евро
           },
           quantity: 1,
         },
       ],
       mode: 'payment',
-      payment_intent_data: {
-        application_fee_amount: platformFee, // Ваши 10% оседают у вас
+      success_url: req.body.success_url || 'https://example.com/success',
+      cancel_url: req.body.cancel_url || 'https://example.com/cancel',
+    };
+
+    // Если объект найден в словаре сплита — добавляем перенаправление 10/90
+    if (ownerStripeId) {
+      const platformFee = Math.round((amountTotal || 100) * 0.10); // Ваши 10%
+      sessionData.payment_intent_data = {
+        application_fee_amount: platformFee,
         transfer_data: {
-          destination: ownerStripeId,        // 90% летят на Stripe Express счет владельца
+          destination: ownerStripeId,
         },
+      };
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionData);
+    res.json({ url: session.url });
+
+  } catch (error) {
+    console.error('Ошибка создания сессии Stripe:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
         metadata: {
           bookingId: bookingId,
           platformShare: platformFee,
