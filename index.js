@@ -12,8 +12,8 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 // ДВЕРЬ №1: Создание ссылки на оплату (Сплит 10/90)
 // ==========================================
 app.post('/api/create-checkout-session', async (req, res) => {
-  try {
-    const { amountTotal, ownerStripeId, bookingId, propertyName } = req.body;
+  try {const { amountTotal, bookingId, propertyName } = req.body;
+const ownerStripeId = req.body.ownerStripeId || "acct_1TfhPP3vJCB9s3Ln";
 
     // Считаем: 10% вам, 90% владельцу
     const platformFee = Math.round(amountTotal * 0.10); 
