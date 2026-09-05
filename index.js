@@ -94,3 +94,4 @@ module.exports = async (req, res) => {
   res.statusCode = 404;
   res.end('Not found');
 };
+module.exports = app;
