@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
 // 1. Создание подключенного аккаунта владельца недвижимости (Express)
 app.post('/api/create-connected-account', async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, returnDomain } = req.body;
 
     const account = await stripe.accounts.create({
       type: 'express',
@@ -28,10 +28,13 @@ app.post('/api/create-connected-account', async (req, res) => {
       },
     });
 
+    // Динамический выбор домена (по умолчанию apartmadeira.com)
+    const domain = returnDomain || 'apartmadeira.com';
+
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
-      refresh_url: `${process.env.FRONTEND_URL}/account/refresh?account=${account.id}`,
-      return_url: `${process.env.FRONTEND_URL}/account/success?account=${account.id}`,
+      refresh_url: `https://${domain}/account/refresh?account=${account.id}`,
+      return_url: `https://${domain}/account/success?account=${account.id}`,
       type: 'account_onboarding',
     });
 
@@ -76,3 +79,4 @@ app.post('/api/create-booking-payment', async (req, res) => {
 
 // Экспорт для Vercel
 module.exports = app;
+
