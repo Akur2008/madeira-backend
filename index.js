@@ -1,98 +1,78 @@
 const express = require('express');
 const app = express();
-app.get('/', (req, res) => {
-  res.send('Smoobu Backend is running!');
-});
 
-// ВАЖНО для Вебхуков (Код №2): Stripe требует "сырые" данные (Buffer), 
+// ВАЖНО для Вебхуков: Stripe требует "сырые" данные (Buffer),
 // поэтому для маршрута вебхука мы используем express.raw, а для остального сайта — express.json
 app.use('/api/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// ==========================================
-// ДВЕРЬ №1: Создание ссылки на оплату (Сплит 10/90)
-// ==========================================
-app.post('/create-checkout-session', async (req, res) => {
-    try {
-        const { amountTotal, propertyName, ownerStripeId, bookingId } = req.body;
-        
-        if (!amountTotal || !ownerStripeId) {
-            return res.status(400).json({ error: 'Missing required parameters: amountTotal or ownerStripeId' });
-        }
+// Тестовый эндпоинт
+app.get('/', (req, res) => {
+  res.send('Smoobu Backend is running!');
+});
 
-       const platformFee = Math.round(amountTotal * 0.10);
-    const ownerAmount = amountTotal - platformFee;
+// 1. Создание подключенного аккаунта владельца недвижимости (Express)
+app.post('/api/create-connected-account', async (req, res) => {
+  try {
+    const { email } = req.body;
 
-    const session = await stripe.checkout.sessions.create({
-        payment_method_types: ['card'],
-        line_items: [{
-            price_data: {
-                currency: 'eur',
-                product_data: {
-                    name: `Бронирование: ${propertyName || 'Апартаменты'}`,
-                },
-                unit_amount: amountTotal,
-            },
-            quantity: 1,
-        }],
-        mode: 'payment',
-        success_url: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}` : 'https://example.com/success',
-        cancel_url: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/cancel` : 'https://example.com/cancel',
-        metadata: {
-            bookingId: bookingId || 'N/A',
-            platformShare: platformFee,
-            ownerShare: ownerAmount
-        },
-        payment_intent_data: {
-            application_fee_amount: platformFee,
-            transfer_data: {
-                destination: ownerStripeId,
-            },
-        }
+    const account = await stripe.accounts.create({
+      type: 'express',
+      country: 'PT',
+      email: email,
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
     });
 
-    res.json({ id: session.id, url: session.url });
-} catch (error) {
-    console.error('Ошибка создания платежа:', error.message);
+    const accountLink = await stripe.accountLinks.create({
+      account: account.id,
+      refresh_url: `${process.env.FRONTEND_URL}/account/refresh?account=${account.id}`,
+      return_url: `${process.env.FRONTEND_URL}/account/success?account=${account.id}`,
+      type: 'account_onboarding',
+    });
+
+    res.json({
+      success: true,
+      accountId: account.id,
+      onboardingUrl: accountLink.url,
+    });
+  } catch (error) {
+    console.error('Error creating connected account:', error.message);
     res.status(500).json({ error: error.message });
-}
+  }
 });
 
-// ==========================================
-// ДВЕРЬ №2: Вебхук (Сигнал от банка, что всё оплачено)
-// ==========================================
-app.post('/api/webhook', async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
+// 2. Создание платежа со сплитом (10% комиссия платформы, 90% владельцу)
+app.post('/api/create-booking-payment', async (req, res) => {
   try {
-    // Проверяем, что сигнал действительно пришел от Stripe, а не от мошенников
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error(`Ошибка подписи вебхука: ${err.message}`);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    const { amountTotal, ownerAccountId, propertyTitle } = req.body;
+
+    const platformFee = Math.round(amountTotal * 0.10);
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountTotal,
+      currency: 'eur',
+      automatic_payment_methods: { enabled: true },
+      description: `Бронирование: ${propertyTitle}`,
+      transfer_data: {
+        destination: ownerAccountId,
+        amount: amountTotal - platformFee,
+      },
+      application_fee_amount: platformFee,
+    });
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+    });
+  } catch (error) {
+    console.error('Error creating payment intent:', error.message);
+    res.status(500).json({ error: error.message });
   }
-
-  // Если банк прислал подтверждение: "Деньги успешно списаны!"
-  if (event.type === 'payment_intent.succeeded') {
-    const paymentIntent = event.data.object;
-    const bookingId = paymentIntent.metadata.bookingId; // Достаем ID брони, который мы туда спрятали
-
-    console.нах(`Деньги получены! Бронирование №${bookingId} оплачено.`);
-
-    // ЗДЕСЬ В БУДУЩЕМ МЕСТЕ ПОСТАВИМ ЗАПРОС К ZEEVOU ИЛИ SMOOBU
-    // await updatePmsBookingStatus(bookingId, 'confirmed');
-  }
-
-  // Обязательно говорим Stripe: "Спасибо, сигнал принят, всё ок"
-  res.json({ received: true });
-});
-app.all('/api/webhooks/smoobu', (req, res) => {
-  console.log('Данные от Smoobu:', req.body);
-  res.status(200).json({ status: 'ok' });
 });
 
-
+// Экспорт для Vercel
 module.exports = app;
