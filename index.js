@@ -6,17 +6,13 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Stripe with live/test secret key from environment
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// Initialize Vercel KV
 const kv = createClient({
   url: process.env.KV_REST_API_URL,
   token: process.env.KV_REST_API_TOKEN,
 });
 
-// 1. WEB ADMIN UI (GET /admin)
-// A simple dashboard to link Smoobu property ID to Stripe Connect owner account ID (acct_...)
 app.get('/admin', async (req, res) => {
   try {
     const keys = await kv.keys('property:*');
@@ -90,7 +86,6 @@ app.get('/admin', async (req, res) => {
   }
 });
 
-// Save or update mapping
 app.post('/admin/save', async (req, res) => {
   const { propertyId, ownerAccountId } = req.body;
   if (!propertyId || !ownerAccountId) {
@@ -100,7 +95,6 @@ app.post('/admin/save', async (req, res) => {
   res.redirect('/admin');
 });
 
-// Delete mapping
 app.post('/admin/delete', async (req, res) => {
   const { propertyId } = req.body;
   if (propertyId) {
@@ -109,8 +103,6 @@ app.post('/admin/delete', async (req, res) => {
   res.redirect('/admin');
 });
 
-// 2. CHECKOUT SESSION CREATION (POST /create-checkout-session)
-// Dynamic amount from Smoobu/request, automatic transfer to owner account stored in Vercel KV
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { propertyId, amount, currency = 'eur', bookingId } = req.body;
@@ -119,17 +111,14 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Missing propertyId or amount' });
     }
 
-    // Lookup owner Stripe Connect ID from Vercel KV
     const ownerAccountId = await kv.get(`property:${propertyId}`);
     
     if (!ownerAccountId) {
       return res.status(400).json({ error: `Owner account not found for property ID: ${propertyId}. Please configure it in /admin` });
     }
 
-    // Convert amount to cents (Stripe requirement)
     const unitAmountInCents = Math.round(parseFloat(amount) * 100);
 
-    // Create Stripe Checkout Session with dynamic pricing & split payment (transfer_data)
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
@@ -149,8 +138,6 @@ app.post('/create-checkout-session', async (req, res) => {
         transfer_data: {
           destination: ownerAccountId,
         },
-        // Optional: platform fee calculation if needed (e.g. 10% platform commission)
-        // application_fee_amount: Math.round(unitAmountInCents * 0.10),
       },
       success_url: `${req.headers.origin || 'https://madeirabook.com'}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${req.headers.origin || 'https://madeirabook.com'}/cancel`,
@@ -168,3 +155,4 @@ app.get('/', (req, res) => {
 });
 
 module.exports = app;
+
