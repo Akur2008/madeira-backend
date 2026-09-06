@@ -17,11 +17,11 @@ module.exports = async (req, res) => {
             return res.end('Unauthorized');
         }
 
-        // Обработка добавления через POST или GET с параметрами
         const smoobuId = urlObj.searchParams.get('smoobuId');
         const stripeId = urlObj.searchParams.get('stripeId');
         const action = urlObj.searchParams.get('action');
 
+        // Добавление связи
         if (action === 'add' && smoobuId && stripeId) {
             await kv.set(`prop:${smoobuId}`, stripeId);
             res.statusCode = 302;
@@ -29,6 +29,7 @@ module.exports = async (req, res) => {
             return res.end();
         }
 
+        // Удаление связи
         if (action === 'delete' && smoobuId) {
             await kv.del(`prop:${smoobuId}`);
             res.statusCode = 302;
@@ -36,7 +37,53 @@ module.exports = async (req, res) => {
             return res.end();
         }
 
-        // Рендер админки
+        // Эндпоинт для создания платежной сессии Stripe
+        if (pathname === '/create-checkout') {
+            const email = urlObj.searchParams.get('email') || 'guest@madeira.local';
+            
+            if (!smoobuId) {
+                res.statusCode = 400;
+                return res.end('Missing smoobuId');
+            }
+
+            const stripePriceId = await kv.get(`prop:${smoobuId}`);
+            if (!stripePriceId) {
+                res.statusCode = 404;
+                return res.end(`Property ${smoobuId} not linked to Stripe price`);
+            }
+
+            const session = await stripe.checkout.sessions.create({
+                payment_method_types: ['card'],
+                line_items: [{
+                    price: stripePriceId,
+                    quantity: 1,
+                }],
+                mode: 'payment',
+                customer_email: email,
+                success_url: `${protocol}://${req.headers.host}/success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${protocol}://${req.headers.host}/cancel`,
+            });
+
+            res.statusCode = 302;
+            res.setHeader('Location', session.url);
+            return res.end();
+        }
+
+        // Страница успешной оплаты
+        if (pathname === '/success') {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            return res.end('<h2 style="font-family: sans-serif; text-align: center; margin-top: 50px;">Оплата прошла успешно! Спасибо.</h2>');
+        }
+
+        // Страница отмененной оплаты
+        if (pathname === '/cancel') {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            return res.end('<h2 style="font-family: sans-serif; text-align: center; margin-top: 50px;">Оплата отменена.</h2>');
+        }
+
+        // Главная панель администратора
         if (pathname === '/admin' || pathname === '/') {
             const keys = await kv.keys('prop:*');
             const mappings = [];
@@ -51,6 +98,7 @@ module.exports = async (req, res) => {
                     <td style="padding: 8px; border: 1px solid #ddd;">${m.smoobuId}</td>
                     <td style="padding: 8px; border: 1px solid #ddd;">${m.stripeId}</td>
                     <td style="padding: 8px; border: 1px solid #ddd;">
+                        <a href="/create-checkout?secret=${ADMIN_SECRET}&smoobuId=${m.smoobuId}" target="_blank" style="color: green; text-decoration: none; margin-right: 10px;">Тест оплаты</a>
                         <a href="/?secret=${ADMIN_SECRET}&action=delete&smoobuId=${m.smoobuId}" style="color: red; text-decoration: none;">Удалить</a>
                     </td>
                 </tr>
@@ -71,7 +119,7 @@ module.exports = async (req, res) => {
                                 <input type="text" name="smoobuId" required style="width: 100%; padding: 8px; margin-top: 5px;">
                             </div>
                             <div style="margin-bottom: 10px;">
-                                <label>Stripe Price/Product ID:</label><br>
+                                <label>Stripe Price ID:</label><br>
                                 <input type="text" name="stripeId" required style="width: 100%; padding: 8px; margin-top: 5px;">
                             </div>
                             <button type="submit" style="background: #0070f3; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 4px;">Добавить связь</button>
