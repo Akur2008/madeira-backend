@@ -13,6 +13,7 @@ const kv = createClient({
   token: process.env.KV_REST_API_TOKEN,
 });
 
+// 1. WEB ADMIN UI (GET /admin)
 app.get('/admin', async (req, res) => {
   try {
     const keys = await kv.keys('property:*');
@@ -43,28 +44,44 @@ app.get('/admin', async (req, res) => {
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #faf8f5; color: #333; padding: 40px; margin: 0; }
           .container { max-width: 700px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-          h2 { margin-top: 0; color: #1a1a1a; }
+          h2, h3 { color: #1a1a1a; }
           input { width: 100%; padding: 10px; margin: 8px 0 20px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
           button { background: #0070f3; color: white; border: none; padding: 12px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; }
           button:hover { background: #005bb5; }
+          .section { margin-bottom: 40px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
           table { width: 100%; border-collapse: collapse; margin-top: 20px; }
           th { text-align: left; padding: 10px; border-bottom: 2px solid #ddd; background: #f9f9f9; }
+          .link-box { background: #e6f4ea; padding: 15px; border-radius: 6px; margin-top: 15px; word-break: break-all; }
         </style>
       </head>
       <body>
         <div class="container">
-          <h2>Привязка объекта Smoobu к Владельцу Stripe</h2>
-          <form action="/admin/save" method="POST">
-            <label>ID объекта в Smoobu (например, 37726):</label>
-            <input type="text" name="propertyId" required placeholder="37726" />
-            
-            <label>Stripe Connect ID владельца (начинается с acct_...):</label>
-            <input type="text" name="ownerAccountId" required placeholder="acct_1XXXXXXXXXXXXXXXX" />
-            
-            <button type="submit">Сохранить привязку</button>
-          </form>
+          
+          <!-- РАЗДЕЛ 1: СОЗДАНИЕ ССЫЛКИ ПОДКЛЮЧЕНИЯ ДЛЯ ВЛАДЕЛЬЦА -->
+          <div class="section">
+            <h2>1. Подключение нового владельца Stripe Connect</h2>
+            <form action="/admin/create-owner" method="POST">
+              <label>Email владельца (или ваш второй тестовый email):</label>
+              <input type="email" name="email" required placeholder="owner@example.com" />
+              <button type="submit">Создать ссылку подключения</button>
+            </form>
+          </div>
 
-          <h3 style="margin-top: 40px;">Активные привязки объектов</h3>
+          <!-- РАЗДЕЛ 2: ПРИВЯЗКА ОБЪЕКТА -->
+          <div class="section">
+            <h2>2. Привязка объекта Smoobu к Владельцу</h2>
+            <form action="/admin/save" method="POST">
+              <label>ID объекта в Smoobu (например, 37726):</label>
+              <input type="text" name="propertyId" required placeholder="37726" />
+              
+              <label>Stripe Connect ID владельца (полученный по ссылке выше, acct_...):</label>
+              <input type="text" name="ownerAccountId" required placeholder="acct_1XXXXXXXXXXXXXXXX" />
+              
+              <button type="submit">Сохранить привязку</button>
+            </form>
+          </div>
+
+          <h3>Активные привязки объектов</h3>
           <table>
             <thead>
               <tr>
@@ -86,6 +103,59 @@ app.get('/admin', async (req, res) => {
   }
 });
 
+// Генерация аккаунта и ссылки для онбординга владельца
+app.post('/admin/create-owner', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).send('Укажите email');
+
+    const account = await stripe.accounts.create({
+      type: 'express',
+      email: email.trim(),
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+    });
+
+    const accountLink = await stripe.accountLinks.create({
+      account: account.id,
+      refresh_url: `${req.protocol}://${req.get('host')}/admin`,
+      return_url: `${req.protocol}://${req.get('host')}/admin`,
+      type: 'account_onboarding',
+    });
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="ru">
+      <head>
+        <meta charset="UTF-8">
+        <title>Ссылка создана</title>
+        <style>
+          body { font-family: -apple-system, sans-serif; background: #faf8f5; padding: 40px; }
+          .container { max-width: 600px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+          a.btn { display: inline-block; background: #0070f3; color: white; padding: 12px 20px; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 15px; }
+          code { background: #f1f1f1; padding: 4px 8px; border-radius: 4px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h2>Ссылка для владельца успешно создана!</h2>
+          <p>ID созданного аккаунта владельца: <code>${account.id}</code></p>
+          <p>Скопируйте этот ID — он понадобится для привязки к объекту Smoobu.</p>
+          <p>Чтобы пройти процесс подключения банка (онбординг), перейдите по ссылке ниже:</p>
+          <a class="btn" href="${accountLink.url}" target="_blank">Пройти онбординг Stripe</a>
+          <br><br>
+          <a href="/admin">&larr Вернуться в админку</a>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send('Ошибка создания аккаунта: ' + err.message);
+  }
+});
+
 app.post('/admin/save', async (req, res) => {
   const { propertyId, ownerAccountId } = req.body;
   if (!propertyId || !ownerAccountId) {
@@ -103,6 +173,7 @@ app.post('/admin/delete', async (req, res) => {
   res.redirect('/admin');
 });
 
+// Эндпоинт для создания платежной сессии (для будущих броней из Smoobu)
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { propertyId, amount, currency = 'eur', bookingId } = req.body;
@@ -114,7 +185,7 @@ app.post('/create-checkout-session', async (req, res) => {
     const ownerAccountId = await kv.get(`property:${propertyId}`);
     
     if (!ownerAccountId) {
-      return res.status(400).json({ error: `Owner account not found for property ID: ${propertyId}. Please configure it in /admin` });
+      return res.status(400).json({ error: `Owner account not found for property ID: ${propertyId}.` });
     }
 
     const unitAmountInCents = Math.round(parseFloat(amount) * 100);
@@ -155,4 +226,3 @@ app.get('/', (req, res) => {
 });
 
 module.exports = app;
-
