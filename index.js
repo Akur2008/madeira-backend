@@ -5,9 +5,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'my-super-secret-key-123';
 
 module.exports = async (req, res) => {
-  const url = new URL(req.url, `https://${req.headers.host}`);
-  const pathname = url.pathname;
-  const secret = url.searchParams.get('secret');
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const fullUrl = `${protocol}://${req.headers.host || 'localhost'}${req.url}`;
+    const urlObj = new URL(fullUrl);
+    const pathname = urlObj.pathname;
+    const secret = urlObj.searchParams.get('secret');
+
 
   // Проверка секретного ключа администратора для всех эндпоинтов
   if (secret !== ADMIN_SECRET) {
