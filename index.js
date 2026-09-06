@@ -1,3 +1,11 @@
+const express = require('express');
+const { createClient } = require('@vercel/kv');
+const Stripe = require('stripe');
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const kv = createClient({
@@ -29,28 +37,10 @@ app.get('/admin', async (req, res) => {
           <h2>Панель управления Madeirabook</h2>
           
           <h3>Создать Stripe Connect аккаунт для владельца</h3>
-          <form id="ownerForm" style="margin-bottom: 30px;">
-            <input type="email" id="emailInput" placeholder="Email владельца" required style="padding: 8px; width: 250px; margin-right: 10px;">
+          <form action="/admin/create-owner" method="POST" style="margin-bottom: 30px;">
+            <input type="email" name="email" placeholder="Email владельца" required style="padding: 8px; width: 250px; margin-right: 10px;">
             <button type="submit" style="padding: 9px 15px; background: #635bff; color: white; border: none; border-radius: 4px; cursor: pointer;">Создать ссылку</button>
           </form>
-
-          <script>
-            document.getElementById('ownerForm').addEventListener('submit', async (e) => {
-              e.preventDefault();
-              const email = document.getElementById('emailInput').value;
-              const response = await fetch('/admin/create-owner', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email })
-              });
-              const data = await response.json();
-              if (data.url) {
-                window.location.href = data.url;
-              } else {
-                alert('Ошибка создания: ' + (data.error || 'неизвестная ошибка'));
-              }
-            });
-          </script>
 
           <h3>Список объектов</h3>
           ${propertiesList || '<p>Нет сохраненных объектов.</p>'}
@@ -66,7 +56,7 @@ app.get('/admin', async (req, res) => {
 app.post('/admin/create-owner', async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'Укажите email' });
+    if (!email) return res.status(400).send('Укажите email');
 
     const account = await stripe.accounts.create({
       type: 'express',
@@ -88,9 +78,9 @@ app.post('/admin/create-owner', async (req, res) => {
       type: 'account_onboarding',
     });
 
-    res.json({ url: accountLink.url });
+    res.redirect(303, accountLink.url);
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).send(`Ошибка создания аккаунта: ${e.message}`);
   }
 });
 
