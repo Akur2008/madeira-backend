@@ -1,138 +1,170 @@
-const { kv } = require('@vercel/kv');
+const express = require('express');
+const { createClient } = require('@vercel/kv');
 const Stripe = require('stripe');
 
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Initialize Stripe with live/test secret key from environment
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const ADMIN_SECRET = process.env.ADMIN_SECRET || '19701975';
 
-module.exports = async (req, res) => {
-    try {
-        const protocol = req.headers['x-forwarded-proto'] || 'https';
-        const fullUrl = `${protocol}://${req.headers.host || 'localhost'}${req.url}`;
-        const urlObj = new URL(fullUrl);
-        const pathname = urlObj.pathname;
-        const secret = urlObj.searchParams.get('secret');
-        const action = urlObj.searchParams.get('action');
-        const smoobuId = urlObj.searchParams.get('smoobuId');
-        const stripeId = urlObj.searchParams.get('stripeId');
+// Initialize Vercel KV
+const kv = createClient({
+  url: process.env.KV_REST_API_URL,
+  token: process.env.KV_REST_API_TOKEN,
+});
 
-        if (secret !== ADMIN_SECRET) {
-            res.statusCode = 401;
-            return res.end('Unauthorized');
-        }
-
-        // Добавление связи
-        if (action === 'add' && smoobuId && stripeId) {
-            await kv.set(`prop:${smoobuId}`, stripeId);
-            res.statusCode = 302;
-            res.setHeader('Location', `/?secret=${ADMIN_SECRET}`);
-            return res.end();
-        }
-
-        // Удаление связи
-        if (action === 'delete' && smoobuId) {
-            await kv.del(`prop:${smoobuId}`);
-            res.statusCode = 302;
-            res.setHeader('Location', `/?secret=${ADMIN_SECRET}`);
-            return res.end();
-        }
-
-        // Тест оплаты (обработка прямо в корневом скрипте)
-        if (action === 'checkout' && smoobuId) {
-            const email = urlObj.searchParams.get('email') || 'guest@madeira.local';
-            const stripePriceId = await kv.get(`prop:${smoobuId}`);
-            
-            if (!stripePriceId) {
-                res.statusCode = 404;
-                return res.end(`Property ${smoobuId} not linked to Stripe price`);
-            }
-
-            const session = await stripe.checkout.sessions.create({
-                payment_method_types: ['card'],
-                line_items: [{
-                    price: stripePriceId,
-                    quantity: 1,
-                }],
-                mode: 'payment',
-                customer_email: email,
-                success_url: `${protocol}://${req.headers.host}/?secret=${ADMIN_SECRET}&status=success`,
-                cancel_url: `${protocol}://${req.headers.host}/?secret=${ADMIN_SECRET}&status=cancel`,
-            });
-
-            res.statusCode = 302;
-            res.setHeader('Location', session.url);
-            return res.end();
-        }
-
-        // Главная панель администратора
-        if (pathname === '/' || pathname === '') {
-            const keys = await kv.keys('prop:*');
-            const mappings = [];
-            for (const key of keys) {
-                const sId = key.replace('prop:', '');
-                const stId = await kv.get(key);
-                mappings.push({ smoobuId: sId, stripeId: stId });
-            }
-
-            const status = urlObj.searchParams.get('status');
-            let banner = '';
-            if (status === 'success') banner = '<div style="background: #d4edda; color: #155724; padding: 10px; margin-bottom: 15px; border-radius: 4px;">Оплата прошла успешно!</div>';
-            if (status === 'cancel') banner = '<div style="background: #f8d7da; color: #721c24; padding: 10px; margin-bottom: 15px; border-radius: 4px;">Оплата была отменена.</div>';
-
-            const rows = mappings.map(m => `
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #ddd;">${m.smoobuId}</td>
-                    <td style="padding: 8px; border: 1px solid #ddd;">${m.stripeId}</td>
-                    <td style="padding: 8px; border: 1px solid #ddd;">
-                        <a href="/?secret=${ADMIN_SECRET}&action=checkout&smoobuId=${m.smoobuId}" target="_blank" style="color: green; text-decoration: none; margin-right: 10px;">Тест оплаты</a>
-                        <a href="/?secret=${ADMIN_SECRET}&action=delete&smoobuId=${m.smoobuId}" style="color: red; text-decoration: none;">Удалить</a>
-                    </td>
-                </tr>
-            `).join('');
-
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'text/html; charset=utf-8');
-            return res.end(`
-                <html>
-                    <head><title>Madeira Admin</title></head>
-                    <body style="font-family: sans-serif; padding: 20px; max-width: 800px; margin: auto;">
-                        <h2>Управление объектами Мадейры</h2>
-                        ${banner}
-                        <form action="/" method="GET" style="background: #f4f4f4; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                            <input type="hidden" name="secret" value="${ADMIN_SECRET}">
-                            <input type="hidden" name="action" value="add">
-                            <div style="margin-bottom: 10px;">
-                                <label>Smoobu Property ID:</label><br>
-                                <input type="text" name="smoobuId" required style="width: 100%; padding: 8px; margin-top: 5px;">
-                            </div>
-                            <div style="margin-bottom: 10px;">
-                                <label>Stripe Price ID:</label><br>
-                                <input type="text" name="stripeId" required style="width: 100%; padding: 8px; margin-top: 5px;">
-                            </div>
-                            <button type="submit" style="background: #0070f3; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 4px;">Добавить связь</button>
-                        </form>
-                        <h3>Привязанные объекты (${mappings.length})</h3>
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <thead>
-                                <tr style="background: #eee;">
-                                    <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Smoobu ID</th>
-                                    <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Stripe ID</th>
-                                    <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Действия</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${rows.length ? rows : '<tr><td colspan="3" style="padding: 10px; text-align: center;">Пока нет привязок</td></tr>'}
-                            </tbody>
-                        </table>
-                    </body>
-                </html>
-            `);
-        }
-
-        res.statusCode = 404;
-        return res.end('Not Found');
-
-    } catch (err) {
-        res.statusCode = 500;
-        return res.end('Server Error: ' + err.message);
+// 1. WEB ADMIN UI (GET /admin)
+// A simple dashboard to link Smoobu property ID to Stripe Connect owner account ID (acct_...)
+app.get('/admin', async (req, res) => {
+  try {
+    const keys = await kv.keys('property:*');
+    let propertiesList = '';
+    
+    for (const key of keys) {
+      const propId = key.replace('property:', '');
+      const ownerId = await kv.get(key);
+      propertiesList += `
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #ddd;">${propId}</td>
+          <td style="padding: 10px; border-bottom: 1px solid #ddd;">${ownerId}</td>
+          <td style="padding: 10px; border-bottom: 1px solid #ddd;">
+            <form action="/admin/delete" method="POST" style="margin:0;">
+              <input type="hidden" name="propertyId" value="${propId}" />
+              <button type="submit" style="background: #ff4d4f; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">Удалить</button>
+            </form>
+          </td>
+        </tr>`;
     }
-};
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="ru">
+      <head>
+        <meta charset="UTF-8">
+        <title>Madeirabook - Управление объектами и владельцами</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #faf8f5; color: #333; padding: 40px; margin: 0; }
+          .container { max-width: 700px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+          h2 { margin-top: 0; color: #1a1a1a; }
+          input { width: 100%; padding: 10px; margin: 8px 0 20px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+          button { background: #0070f3; color: white; border: none; padding: 12px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; }
+          button:hover { background: #005bb5; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th { text-align: left; padding: 10px; border-bottom: 2px solid #ddd; background: #f9f9f9; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h2>Привязка объекта Smoobu к Владельцу Stripe</h2>
+          <form action="/admin/save" method="POST">
+            <label>ID объекта в Smoobu (например, 37726):</label>
+            <input type="text" name="propertyId" required placeholder="37726" />
+            
+            <label>Stripe Connect ID владельца (начинается с acct_...):</label>
+            <input type="text" name="ownerAccountId" required placeholder="acct_1XXXXXXXXXXXXXXXX" />
+            
+            <button type="submit">Сохранить привязку</button>
+          </form>
+
+          <h3 style="margin-top: 40px;">Активные привязки объектов</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>ID Объекта Smoobu</th>
+                <th>Stripe Connect Account (Владелец)</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${propertiesList || '<tr><td colspan="3" style="padding: 15px; text-align: center; color: #888;">Пока нет добавленных объектов</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send('Ошибка загрузки админки: ' + err.message);
+  }
+});
+
+// Save or update mapping
+app.post('/admin/save', async (req, res) => {
+  const { propertyId, ownerAccountId } = req.body;
+  if (!propertyId || !ownerAccountId) {
+    return res.status(400).send('Заполните все поля');
+  }
+  await kv.set(`property:${propertyId.trim()}`, ownerAccountId.trim());
+  res.redirect('/admin');
+});
+
+// Delete mapping
+app.post('/admin/delete', async (req, res) => {
+  const { propertyId } = req.body;
+  if (propertyId) {
+    await kv.del(`property:${propertyId.trim()}`);
+  }
+  res.redirect('/admin');
+});
+
+// 2. CHECKOUT SESSION CREATION (POST /create-checkout-session)
+// Dynamic amount from Smoobu/request, automatic transfer to owner account stored in Vercel KV
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    const { propertyId, amount, currency = 'eur', bookingId } = req.body;
+
+    if (!propertyId || !amount) {
+      return res.status(400).json({ error: 'Missing propertyId or amount' });
+    }
+
+    // Lookup owner Stripe Connect ID from Vercel KV
+    const ownerAccountId = await kv.get(`property:${propertyId}`);
+    
+    if (!ownerAccountId) {
+      return res.status(400).json({ error: `Owner account not found for property ID: ${propertyId}. Please configure it in /admin` });
+    }
+
+    // Convert amount to cents (Stripe requirement)
+    const unitAmountInCents = Math.round(parseFloat(amount) * 100);
+
+    // Create Stripe Checkout Session with dynamic pricing & split payment (transfer_data)
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: currency.toLowerCase(),
+            product_data: {
+              name: `Бронирование объекта #${propertyId}${bookingId ? ' (Бронь: ' + bookingId + ')' : ''}`,
+            },
+            unit_amount: unitAmountInCents,
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      payment_intent_data: {
+        transfer_data: {
+          destination: ownerAccountId,
+        },
+        // Optional: platform fee calculation if needed (e.g. 10% platform commission)
+        // application_fee_amount: Math.round(unitAmountInCents * 0.10),
+      },
+      success_url: `${req.headers.origin || 'https://madeirabook.com'}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${req.headers.origin || 'https://madeirabook.com'}/cancel`,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Stripe Checkout Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/', (req, res) => {
+  res.send('Madeirabook Stripe Gateway is running. Go to <a href="/admin">/admin</a> to manage properties.');
+});
+
+module.exports = app;
