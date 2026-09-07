@@ -256,7 +256,71 @@ app.post('/admin/update-commission', async (req, res) => {
   }
 });
 
-// 6. Создание платежной сессии с динамическим расчетом комиссии из Upstash
+// 6. Создание бронирования в Smoobu + запуск Stripe Checkout (для виджета на сайте)
+app.post('/create-booking-and-pay', async (req, res) => {
+  try {
+    const { propertyId, arrivalDate, departureDate, guestEmail, guestName, price } = req.body;
+    if (!propertyId || !arrivalDate || !departureDate || !guestEmail || !guestName || !price) {
+      return res.status(400).json({ error: 'Заполнены не все обязательные поля' });
+    }
+
+    // Создаем бронирование в Smoobu через API для блокировки дат
+    const smoobuRes = await axios.post('https://login.smoobu.com/api/reservations', {
+      propertyId: Number(propertyId),
+      arrivalDate,
+      departureDate,
+      type: '1',
+      price: Number(price),
+      firstName: guestName,
+      lastName: '',
+      email: guestEmail
+    }, {
+      headers: { 'Api-Key': process.env.SMOOBU_API_KEY, 'Content-Type': 'application/json' }
+    });
+
+    const smoobuBookingId = smoobuRes.data.id;
+
+    const propData = await kv.get(`property:${propertyId}`);
+    const commissionPercent = propData?.commissionPercent !== undefined ? Number(propData.commissionPercent) : 0;
+    const stripeAccountId = propData?.stripeAccountId;
+
+    const totalAmountInCents = Math.round(Number(price) * 100);
+    const platformFee = Math.round(totalAmountInCents * (commissionPercent / 100));
+
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = `${protocol}://${host}`;
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'eur',
+          product_data: {
+            name: `Booking Accommodation - Property #${propertyId}`,
+          },
+          unit_amount: totalAmountInCents,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      customer_email: guestEmail,
+      payment_intent_data: {
+        application_fee_amount: platformFee > 0 ? platformFee : undefined,
+        transfer_data: { destination: stripeAccountId },
+        metadata: { smoobuBookingId: String(smoobuBookingId) }
+      },
+      success_url: `${baseUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/booking-cancel`,
+    });
+
+    res.json({ url: session.url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 7. Создание платежной сессии (старый эндпоинт, если нужен отдельно)
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { propertyId, amount, smoobuBookingId } = req.body; 
@@ -317,7 +381,7 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
  
-// 7. Вебхук от Stripe
+// 8. Вебхук от Stripe
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
