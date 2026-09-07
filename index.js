@@ -2,33 +2,33 @@ const express = require('express');
 const { createClient } = require('@vercel/kv');
 const Stripe = require('stripe');
 const axios = require('axios');
-
+ 
 const app = express();
-
+ 
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+ 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
+ 
 const kv = createClient({
   url: process.env.KV_REST_API_URL,
   token: process.env.KV_REST_API_TOKEN,
 });
-
+ 
 // 1. WEB ADMIN UI (GET /admin)
 app.get('/admin', async (req, res) => {
   try {
     const keys = await kv.keys('property:*');
     let propertiesList = '';
-
+ 
     for (const key of keys) {
       const propId = key.replace('property:', '');
       const propData = await kv.get(key);
       
       let stripeStatus = 'Не проверен';
       let badgeColor = '#ffc107';
-
+ 
       if (propData && propData.stripeAccountId) {
         try {
           const account = await stripe.accounts.retrieve(propData.stripeAccountId);
@@ -43,22 +43,24 @@ app.get('/admin', async (req, res) => {
           stripeStatus = 'Ошибка проверки аккаунта';
         }
       }
+ 
+      const currentCommission = propData.commissionPercent !== undefined ? propData.commissionPercent : 0;
 
       propertiesList += `
         <div style="background: #fff; padding: 15px; margin-bottom: 12px; border-radius: 8px; border: 1px solid #ddd; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
           <strong>Объект Smoobu ID:</strong> <span style="font-size: 16px; color: #0070f3;">${propId}</span><br>
           <strong>Email владельца:</strong> ${propData.ownerEmail || '—'}<br>
           <strong>Stripe Account:</strong> <code>${propData.stripeAccountId || '—'}</code><br>
+          <strong>Комиссия платформы:</strong> <span style="color: #d97706; font-weight: bold;">${currentCommission}%</span><br>
           <strong>Статус Stripe:</strong> <span style="background: ${badgeColor}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${stripeStatus}</span><br>
         </div>
       `;
     }
-
-    // Если в query передана свежесозданная ссылка, показываем её блок
+ 
     const newLink = req.query.link;
     const newEmail = req.query.email;
     const newProp = req.query.prop;
-
+ 
     let linkBox = '';
     if (newLink) {
       linkBox = `
@@ -71,7 +73,7 @@ app.get('/admin', async (req, res) => {
         </div>
       `;
     }
-
+ 
     res.send(`
       <html>
         <head><title>Madeirabook Admin Dashboard</title><meta charset="utf-8"></head>
@@ -79,7 +81,7 @@ app.get('/admin', async (req, res) => {
           <h2 style="color: #333;">Панель управления Madeirabook</h2>
           
           ${linkBox}
-
+ 
           <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 25px;">
             <h3 style="margin-top: 0;">Привязать объект Smoobu к Stripe аккаунту владельца</h3>
             <form action="/admin/create-owner" method="POST">
@@ -89,10 +91,14 @@ app.get('/admin', async (req, res) => {
               <div style="margin-bottom: 10px;">
                 <input type="email" name="email" placeholder="Email владельца" required style="padding: 10px; width: 100%; max-width: 400px; border: 1px solid #ccc; border-radius: 4px; display: block;">
               </div>
+              <div style="margin-bottom: 10px;">
+                <label style="font-size: 14px; color: #555; display: block; margin-bottom: 5px;">Комиссия платформы (%): для своих 0, для партнеров 10-15</label>
+                <input type="number" name="commissionPercent" value="0" min="0" max="100" step="1" required style="padding: 10px; width: 100%; max-width: 400px; border: 1px solid #ccc; border-radius: 4px; display: block;">
+              </div>
               <button type="submit" style="padding: 10px 20px; background: #635bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Сгенерировать ссылку</button>
             </form>
           </div>
-
+ 
           <h3 style="color: #333;">Список объектов в базе</h3>
           ${propertiesList || '<p style="color: #666;">Нет сохраненных объектов.</p>'}
         </body>
@@ -102,20 +108,21 @@ app.get('/admin', async (req, res) => {
     res.status(500).send(`Ошибка: ${e.message}`);
   }
 });
-
-// 2. Обработка подключения и выдача ссылки в админку (вместо авто-редиректа)
+ 
+// 2. Обработка подключения и выдача ссылки в админку
 app.post('/admin/create-owner', async (req, res) => {
   try {
-    const { email, propertyId } = req.body;
+    const { email, propertyId, commissionPercent } = req.body;
     if (!email || !propertyId) return res.status(400).send('Укажите email и ID объекта Smoobu');
-
+ 
     const cleanEmail = email.trim().toLowerCase();
     const cleanPropId = propertyId.trim();
-
+    const parsedCommission = commissionPercent !== undefined ? Number(commissionPercent) : 0;
+ 
     const ownerKey = `owner:${cleanEmail}`;
     let ownerData = await kv.get(ownerKey);
     let stripeAccountId;
-
+ 
     if (ownerData && ownerData.stripeAccountId) {
       stripeAccountId = ownerData.stripeAccountId;
     } else {
@@ -129,42 +136,51 @@ app.post('/admin/create-owner', async (req, res) => {
       });
       stripeAccountId = account.id;
     }
-
+ 
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = `${protocol}://${host}`;
-
-    // Сохраняем связку в базу
-    await kv.set(`property:${cleanPropId}`, { stripeAccountId, ownerEmail: cleanEmail, chargesEnabled: false });
-
+ 
+    // Сохраняем связку вместе с индивидуальным процентом комиссии в базу
+    await kv.set(`property:${cleanPropId}`, { 
+      stripeAccountId, 
+      ownerEmail: cleanEmail, 
+      chargesEnabled: false,
+      commissionPercent: parsedCommission 
+    });
+ 
     const accountLink = await stripe.accountLinks.create({
       account: stripeAccountId,
-      refresh_url: `${baseUrl}/admin/reauth?account_id=${stripeAccountId}&property_id=${encodeURIComponent(cleanPropId)}&email=${encodeURIComponent(cleanEmail)}`,
-      return_url: `${baseUrl}/admin/success?account_id=${stripeAccountId}&property_id=${encodeURIComponent(cleanPropId)}&email=${encodeURIComponent(cleanEmail)}`,
+      refresh_url: `${baseUrl}/admin/reauth?account_id=${stripeAccountId}&property_id=${encodeURIComponent(cleanPropId)}&email=${encodeURIComponent(cleanEmail)}&commission=${parsedCommission}`,
+      return_url: `${baseUrl}/admin/success?account_id=${stripeAccountId}&property_id=${encodeURIComponent(cleanPropId)}&email=${encodeURIComponent(cleanEmail)}&commission=${parsedCommission}`,
       type: 'account_onboarding',
     });
-
-    // Возвращаем администратора обратно в админку, но передаем готовую ссылку в параметрах
+ 
     res.redirect(303, `/admin?link=${encodeURIComponent(accountLink.url)}&email=${encodeURIComponent(cleanEmail)}&prop=${encodeURIComponent(cleanPropId)}`);
   } catch (e) {
     res.status(400).send(`Ошибка создания аккаунта: ${e.message}`);
   }
 });
-
+ 
 // 3. Сохранение связей в Vercel KV при успешном возврате владельца
 app.get('/admin/success', async (req, res) => {
   try {
-    const { account_id, property_id, email } = req.query;
+    const { account_id, property_id, email, commission } = req.query;
     
     if (property_id && account_id && email) {
       const account = await stripe.accounts.retrieve(account_id);
       
+      // Достаем существующие данные объекта, чтобы не затереть комиссию, если она уже была
+      const existingPropData = await kv.get(`property:${property_id}`) || {};
+      const finalCommission = commission !== undefined ? Number(commission) : (existingPropData.commissionPercent ?? 0);
+
       await kv.set(`property:${property_id}`, { 
         stripeAccountId: account_id, 
         ownerEmail: email,
-        chargesEnabled: account.charges_enabled 
+        chargesEnabled: account.charges_enabled,
+        commissionPercent: finalCommission
       });
-
+ 
       const ownerKey = `owner:${email}`;
       let ownerData = await kv.get(ownerKey) || { stripeAccountId: account_id, properties: [] };
       
@@ -173,7 +189,7 @@ app.get('/admin/success', async (req, res) => {
       }
       await kv.set(ownerKey, ownerData);
     }
-
+ 
     res.send(`
       <div style="font-family: Arial; padding: 40px; text-align: center;">
         <h2 style="color: #28a745;">Владелец успешно завершил настройку!</h2>
@@ -185,58 +201,63 @@ app.get('/admin/success', async (req, res) => {
     res.send(`Аккаунт подключен, но произошла ошибка сохранения: ${e.message}. <a href="/admin">В админку</a>`);
   }
 });
-
+ 
 // 4. Автоматическое обновление просроченной ссылки
 app.get('/admin/reauth', async (req, res) => {
   try {
-    const { account_id, property_id, email } = req.query;
+    const { account_id, property_id, email, commission } = req.query;
     if (!account_id) {
       return res.send('Ссылка устарела. <a href="/admin">Вернитесь в админку</a> для создания новой.');
     }
-
+ 
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = `${protocol}://${host}`;
-
+ 
     const accountLink = await stripe.accountLinks.create({
       account: account_id,
-      refresh_url: `${baseUrl}/admin/reauth?account_id=${account_id}&property_id=${property_id || ''}&email=${email || ''}`,
-      return_url: `${baseUrl}/admin/success?account_id=${account_id}&property_id=${property_id || ''}&email=${email || ''}`,
+      refresh_url: `${baseUrl}/admin/reauth?account_id=${account_id}&property_id=${property_id || ''}&email=${email || ''}&commission=${commission || 0}`,
+      return_url: `${baseUrl}/admin/success?account_id=${account_id}&property_id=${property_id || ''}&email=${email || ''}&commission=${commission || 0}`,
       type: 'account_onboarding',
     });
-
+ 
     res.redirect(303, accountLink.url);
   } catch (e) {
     res.status(400).send(`Ошибка обновления ссылки: ${e.message}`);
   }
 });
-
-// 5. Создание платежной сессии с разделением 10/90
+ 
+// 5. Создание платежной сессии с динамическим расчетом комиссии из Upstash
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { propertyId, amount, smoobuBookingId } = req.body; 
     if (!propertyId || !amount) {
       return res.status(400).json({ error: 'Укажите propertyId и amount' });
     }
-
+ 
     const propData = await kv.get(`property:${propertyId}`);
     if (!propData || !propData.stripeAccountId) {
       return res.status(404).json({ error: 'Для этого объекта не найден подключенный Stripe аккаунт владельца' });
     }
-
+ 
     const stripeAccountId = propData.stripeAccountId;
     
     const account = await stripe.accounts.retrieve(stripeAccountId);
     if (!account.charges_enabled) {
       return res.status(400).json({ error: 'Владелец объекта еще не завершил верификацию в Stripe' });
     }
-
-    const platformFee = Math.round(amount * 0.10);
-
+ 
+    // Читаем процент комиссии для конкретного объекта (если не задан, берем 0)
+    const commissionPercent = propData.commissionPercent !== undefined ? Number(propData.commissionPercent) : 0;
+    
+    // Считаем сумму комиссии платформы
+    const totalAmountInCents = Number(amount);
+    const platformFee = Math.round(totalAmountInCents * (commissionPercent / 100));
+ 
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = `${protocol}://${host}`;
-
+ 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -245,13 +266,15 @@ app.post('/create-checkout-session', async (req, res) => {
           product_data: {
             name: `Бронирование объекта ${propertyId}`,
           },
-          unit_amount: Number(amount),
+          unit_amount: totalAmountInCents,
         },
         quantity: 1,
       }],
       mode: 'payment',
       payment_intent_data: {
-        application_fee_amount: platformFee,
+        // Если commissionPercent = 0, platformFee будет 0. 
+        // Если комиссия больше 0, передаем точную сумму сплита. Если 0 — параметр можно не передавать, либо передавать undefined.
+        application_fee_amount: platformFee > 0 ? platformFee : undefined,
         transfer_data: {
           destination: stripeAccountId,
         },
@@ -262,18 +285,18 @@ app.post('/create-checkout-session', async (req, res) => {
       success_url: `${baseUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/booking-cancel`,
     });
-
+ 
     res.json({ url: session.url });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
+ 
 // 6. Вебхук от Stripe
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
-
+ 
   try {
     if (process.env.STRIPE_WEBHOOK_SECRET) {
       event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
@@ -283,7 +306,7 @@ app.post('/webhook', async (req, res) => {
   } catch (err) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
-
+ 
   if (event.type === 'account.updated') {
     const account = event.data.object;
     const keys = await kv.keys('property:*');
@@ -295,14 +318,14 @@ app.post('/webhook', async (req, res) => {
       }
     }
   }
-
+ 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     
     if (session.payment_intent) {
       const paymentIntent = await stripe.paymentIntents.retrieve(session.payment_intent);
       const smoobuBookingId = paymentIntent.metadata?.smoobuBookingId;
-
+ 
       if (smoobuBookingId && process.env.SMOOBU_API_KEY) {
         try {
           await axios.put(
@@ -322,9 +345,8 @@ app.post('/webhook', async (req, res) => {
       }
     }
   }
-
+ 
   res.json({ received: true });
 });
-
+ 
 module.exports = app;
-
