@@ -51,8 +51,14 @@ app.get('/admin', async (req, res) => {
           <strong>Объект Smoobu ID:</strong> <span style="font-size: 16px; color: #0070f3;">${propId}</span><br>
           <strong>Email владельца:</strong> ${propData.ownerEmail || '—'}<br>
           <strong>Stripe Account:</strong> <code>${propData.stripeAccountId || '—'}</code><br>
-          <strong>Комиссия платформы:</strong> <span style="color: #d97706; font-weight: bold;">${currentCommission}%</span><br>
           <strong>Статус Stripe:</strong> <span style="background: ${badgeColor}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${stripeStatus}</span><br>
+          
+          <form action="/admin/update-commission" method="POST" style="margin-top: 12px; display: flex; align-items: center; gap: 10px; background: #f9fafb; padding: 10px; border-radius: 6px; border: 1px solid #eee;">
+            <input type="hidden" name="propertyId" value="${propId}">
+            <label style="font-size: 14px; color: #555; font-weight: bold;">Комиссия платформы (%):</label>
+            <input type="number" name="commissionPercent" value="${currentCommission}" min="0" max="100" step="1" style="width: 70px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;" required>
+            <button type="submit" style="padding: 6px 14px; background: #0070f3; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px;">Изменить</button>
+          </form>
         </div>
       `;
     }
@@ -141,7 +147,6 @@ app.post('/admin/create-owner', async (req, res) => {
     const host = req.headers['host'];
     const baseUrl = `${protocol}://${host}`;
  
-    // Сохраняем связку вместе с индивидуальным процентом комиссии в базу
     await kv.set(`property:${cleanPropId}`, { 
       stripeAccountId, 
       ownerEmail: cleanEmail, 
@@ -170,7 +175,6 @@ app.get('/admin/success', async (req, res) => {
     if (property_id && account_id && email) {
       const account = await stripe.accounts.retrieve(account_id);
       
-      // Достаем существующие данные объекта, чтобы не затереть комиссию, если она уже была
       const existingPropData = await kv.get(`property:${property_id}`) || {};
       const finalCommission = commission !== undefined ? Number(commission) : (existingPropData.commissionPercent ?? 0);
 
@@ -227,7 +231,32 @@ app.get('/admin/reauth', async (req, res) => {
   }
 });
  
-// 5. Создание платежной сессии с динамическим расчетом комиссии из Upstash
+// 5. Быстрое изменение процента комиссии для существующего объекта
+app.post('/admin/update-commission', async (req, res) => {
+  try {
+    const { propertyId, commissionPercent } = req.body;
+    if (!propertyId || commissionPercent === undefined) {
+      return res.status(400).send('Укажите propertyId и новый commissionPercent');
+    }
+
+    const cleanPropId = propertyId.trim();
+    const propKey = `property:${cleanPropId}`;
+    
+    const propData = await kv.get(propKey);
+    if (!propData) {
+      return res.status(404).send('Объект не найден в базе');
+    }
+
+    propData.commissionPercent = Number(commissionPercent);
+    await kv.set(propKey, propData);
+
+    res.redirect(303, '/admin');
+  } catch (e) {
+    res.status(500).send(`Ошибка обновления комиссии: ${e.message}`);
+  }
+});
+
+// 6. Создание платежной сессии с динамическим расчетом комиссии из Upstash
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { propertyId, amount, smoobuBookingId } = req.body; 
@@ -247,10 +276,8 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Владелец объекта еще не завершил верификацию в Stripe' });
     }
  
-    // Читаем процент комиссии для конкретного объекта (если не задан, берем 0)
     const commissionPercent = propData.commissionPercent !== undefined ? Number(propData.commissionPercent) : 0;
     
-    // Считаем сумму комиссии платформы
     const totalAmountInCents = Number(amount);
     const platformFee = Math.round(totalAmountInCents * (commissionPercent / 100));
  
@@ -272,8 +299,6 @@ app.post('/create-checkout-session', async (req, res) => {
       }],
       mode: 'payment',
       payment_intent_data: {
-        // Если commissionPercent = 0, platformFee будет 0. 
-        // Если комиссия больше 0, передаем точную сумму сплита. Если 0 — параметр можно не передавать, либо передавать undefined.
         application_fee_amount: platformFee > 0 ? platformFee : undefined,
         transfer_data: {
           destination: stripeAccountId,
@@ -292,7 +317,7 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
  
-// 6. Вебхук от Stripe
+// 7. Вебхук от Stripe
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
