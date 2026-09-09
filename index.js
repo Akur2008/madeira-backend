@@ -45,7 +45,7 @@ app.get('/admin', async (req, res) => {
       }
  
       const currentCommission = propData.commissionPercent !== undefined ? propData.commissionPercent : 0;
-
+ 
       propertiesList += `
         <div style="background: #fff; padding: 15px; margin-bottom: 12px; border-radius: 8px; border: 1px solid #ddd; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
           <strong>Объект Smoobu ID:</strong> <span style="font-size: 16px; color: #0070f3;">${propId}</span><br>
@@ -177,7 +177,7 @@ app.get('/admin/success', async (req, res) => {
       
       const existingPropData = await kv.get(`property:${property_id}`) || {};
       const finalCommission = commission !== undefined ? Number(commission) : (existingPropData.commissionPercent ?? 0);
-
+ 
       await kv.set(`property:${property_id}`, { 
         stripeAccountId: account_id, 
         ownerEmail: email,
@@ -238,7 +238,7 @@ app.post('/admin/update-commission', async (req, res) => {
     if (!propertyId || commissionPercent === undefined) {
       return res.status(400).send('Укажите propertyId и новый commissionPercent');
     }
-
+ 
     const cleanPropId = propertyId.trim();
     const propKey = `property:${cleanPropId}`;
     
@@ -246,22 +246,34 @@ app.post('/admin/update-commission', async (req, res) => {
     if (!propData) {
       return res.status(404).send('Объект не найден в базе');
     }
-
+ 
     propData.commissionPercent = Number(commissionPercent);
     await kv.set(propKey, propData);
-
+ 
     res.redirect(303, '/admin');
   } catch (e) {
     res.status(500).send(`Ошибка обновления комиссии: ${e.message}`);
   }
 });
-
+ 
 // 6. Создание бронирования в Smoobu + запуск Stripe Checkout (для виджета на сайте)
 app.post('/create-booking-and-pay', async (req, res) => {
   try {
     const { propertyId, arrivalDate, departureDate, guestEmail, guestName, price } = req.body;
-    if (!propertyId || !arrivalDate || !departureDate || !guestEmail || !guestName || !price) {
-      return res.status(400).json({ error: 'Заполнены не все обязательные поля' });
+    if (!propertyId || !arrivalDate || !departureDate) {
+      return res.status(400).json({ error: 'Не указаны обязательные параметры (propertyId, arrivalDate, departureDate)' });
+    }
+ 
+    let finalPrice = price;
+    let finalEmail = guestEmail || 'guest@madeirabook.com';
+    let finalName = guestName || 'Guest';
+
+    // Если цена не передана с фронтенда, запрашиваем её из Smoobu API по датам
+    if (!finalPrice) {
+      const ratesRes = await axios.get(`https://login.smoobu.com/api/rates?apartmentId=${propertyId}&arrivalDate=${arrivalDate}&departureDate=${departureDate}`, {
+        headers: { 'Api-Key': process.env.SMOOBU_API_KEY, 'Content-Type': 'application/json' }
+      });
+      finalPrice = ratesRes.data.totalPrice || ratesRes.data.price || 100; // запасной вариант суммы
     }
 
     // Создаем бронирование в Smoobu через API для блокировки дат
@@ -270,41 +282,41 @@ app.post('/create-booking-and-pay', async (req, res) => {
       arrivalDate,
       departureDate,
       type: '1',
-      price: Number(price),
-      firstName: guestName,
+      price: Number(finalPrice),
+      firstName: finalName,
       lastName: '',
-      email: guestEmail
+      email: finalEmail
     }, {
       headers: { 'Api-Key': process.env.SMOOBU_API_KEY, 'Content-Type': 'application/json' }
     });
-
+ 
     const smoobuBookingId = smoobuRes.data.id;
-
+ 
     const propData = await kv.get(`property:${propertyId}`);
     const commissionPercent = propData?.commissionPercent !== undefined ? Number(propData.commissionPercent) : 0;
     const stripeAccountId = propData?.stripeAccountId;
-
-    const totalAmountInCents = Math.round(Number(price) * 100);
+ 
+    const totalAmountInCents = Math.round(Number(finalPrice) * 100);
     const platformFee = Math.round(totalAmountInCents * (commissionPercent / 100));
-
+ 
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = `${protocol}://${host}`;
-
+ 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
           currency: 'eur',
           product_data: {
-            name: `Booking Accommodation - Property #${propertyId}`,
+            name: `Бронирование апартаментов #${propertyId} (${arrivalDate} — ${departureDate})`,
           },
           unit_amount: totalAmountInCents,
         },
         quantity: 1,
       }],
       mode: 'payment',
-      customer_email: guestEmail,
+      customer_email: finalEmail,
       payment_intent_data: {
         application_fee_amount: platformFee > 0 ? platformFee : undefined,
         transfer_data: { destination: stripeAccountId },
@@ -313,13 +325,13 @@ app.post('/create-booking-and-pay', async (req, res) => {
       success_url: `${baseUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/booking-cancel`,
     });
-
+ 
     res.json({ url: session.url });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
+ 
 // 7. Создание платежной сессии (старый эндпоинт, если нужен отдельно)
 app.post('/create-checkout-session', async (req, res) => {
   try {
