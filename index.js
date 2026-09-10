@@ -90,7 +90,7 @@ app.get('/admin', async (req, res) => {
  
           <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 25px;">
             <h3 style="margin-top: 0;">Привязать объект Smoobu к Stripe аккаунту владельца</h3>
-            <form action="/admin/create-owner" method="POST">
+            <form action="/create-owner" method="POST">
               <div style="margin-bottom: 10px;">
                 <input type="text" name="propertyId" placeholder="ID объекта Smoobu (например, 37726)" required style="padding: 10px; width: 100%; max-width: 400px; border: 1px solid #ccc; border-radius: 4px; display: block;">
               </div>
@@ -116,7 +116,7 @@ app.get('/admin', async (req, res) => {
 });
  
 // 2. Обработка подключения и выдача ссылки в админку
-app.post('/admin/create-owner', async (req, res) => {
+app.post('/create-owner', async (req, res) => {
   try {
     const { email, propertyId, commissionPercent } = req.body;
     if (!email || !propertyId) return res.status(400).send('Укажите email и ID объекта Smoobu');
@@ -267,16 +267,14 @@ app.post('/create-booking-and-pay', async (req, res) => {
     let finalPrice = price;
     let finalEmail = guestEmail || 'guest@madeirabook.com';
     let finalName = guestName || 'Guest';
-
-    // Если цена не передана с фронтенда, запрашиваем её из Smoobu API по датам
+ 
     if (!finalPrice) {
       const ratesRes = await axios.get(`https://login.smoobu.com/api/rates?apartmentId=${propertyId}&arrivalDate=${arrivalDate}&departureDate=${departureDate}`, {
         headers: { 'Api-Key': process.env.SMOOBU_API_KEY, 'Content-Type': 'application/json' }
       });
-      finalPrice = ratesRes.data.totalPrice || ratesRes.data.price || 100; // запасной вариант суммы
+      finalPrice = ratesRes.data.totalPrice || ratesRes.data.price || 100;
     }
-
-    // Создаем бронирование в Smoobu через API для блокировки дат
+ 
     const smoobuRes = await axios.post('https://login.smoobu.com/api/reservations', {
       propertyId: Number(propertyId),
       arrivalDate,
@@ -332,7 +330,7 @@ app.post('/create-booking-and-pay', async (req, res) => {
   }
 });
  
-// 7. Создание платежной сессии (старый эндпоинт, если нужен отдельно)
+// 7. Создание платежной сессии
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { propertyId, amount, smoobuBookingId } = req.body; 
@@ -451,4 +449,3 @@ app.post('/webhook', async (req, res) => {
 });
  
 module.exports = app;
-
