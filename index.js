@@ -402,5 +402,30 @@ app.post('/create-booking-and-pay', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+app.get('/admin', (req, res) => {
+  res.status(200).send(`
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Madeirabook Admin Panel</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f6f8; padding: 40px; }
+        .card { background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); max-width: 600px; margin: 0 auto; }
+        h1 { font-size: 24px; color: #1a1a1a; margin-bottom: 10px; }
+        .status { display: inline-block; padding: 6px 12px; background: #e6f4ea; color: #137333; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 20px; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Панель управления Madeirabook</h1>
+        <div class="status">● Бэкенд активен</div>
+        <p>Сервер Vercel работает. Stripe и Smoobu подключены.</p>
+      </div>
+    </body>
+    </html>
+  `);
+});
 
 module.exports = app;
