@@ -2,105 +2,33 @@ const express = require('express');
 const { createClient } = require('@vercel/kv');
 const Stripe = require('stripe');
 const axios = require('axios');
-
+ 
 const app = express();
-
+ 
+app.use('/webhook', express.raw({ type: 'application/json' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+ 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
+ 
 const kv = createClient({
   url: process.env.KV_REST_API_URL,
   token: process.env.KV_REST_API_TOKEN,
 });
-
-// ==========================================
-// 1. STRIPE WEBHOOK (ОБЯЗАТЕЛЬНО ПЕРВЫМ!)
-// ==========================================
-app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    if (process.env.STRIPE_WEBHOOK_SECRET) {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } else {
-      event = JSON.parse(req.body.toString());
-    }
-  } catch (err) {
-    console.error('Webhook verification error:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  if (event.type === 'account.updated') {
-    const account = event.data.object;
-    const keys = await kv.keys('property:*');
-    for (const key of keys) {
-      const propData = await kv.get(key);
-      if (propData && propData.stripeAccountId === account.id) {
-        propData.chargesEnabled = account.charges_enabled;
-        await kv.set(key, propData);
-      }
-    }
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    
-    if (session.payment_intent) {
-      const paymentIntent = await stripe.paymentIntents.retrieve(session.payment_intent);
-      const smoobuBookingId = paymentIntent.metadata?.smoobuBookingId;
-
-      if (smoobuBookingId && process.env.SMOOBU_API_KEY) {
-        try {
-          await axios.put(
-            `https://login.smoobu.com/api/reservations/${smoobuBookingId}`, 
-            { paid: true },
-            {
-              headers: {
-                'Api-Key': process.env.SMOOBU_API_KEY,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          console.log(`Бронирование Smoobu ID ${smoobuBookingId} успешно обновлено на оплачено.`);
-        } catch (smoobuErr) {
-          console.error('Ошибка при обновлении бронирования в Smoobu:', smoobuErr.message);
-        }
-      }
-    }
-  }
-
-  res.json({ received: true });
-});
-
-// ==========================================
-// 2. ПАРСЕРЫ ДЛЯ ВСЕХ ОСТАЛЬНЫХ МАРШРУТОВ
-// ==========================================
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Базовый URL с поддержкой кастомного домена apartmadeira.com
-const getBaseUrl = (req) => {
-  if (process.env.DOMAIN_NAME) return `https://${process.env.DOMAIN_NAME}`;
-  const protocol = req.headers['x-forwarded-proto'] || 'https';
-  const host = req.headers['host'] || 'apartmadeira.com';
-  return `${protocol}://${host}`;
-};
-
-// ==========================================
-// 3. WEB ADMIN UI (GET /admin)
-// ==========================================
+ 
+// 1. WEB ADMIN UI (GET /admin)
 app.get('/admin', async (req, res) => {
   try {
     const keys = await kv.keys('property:*');
     let propertiesList = '';
-
+ 
     for (const key of keys) {
       const propId = key.replace('property:', '');
       const propData = await kv.get(key);
       
       let stripeStatus = 'Не проверен';
       let badgeColor = '#ffc107';
-
+ 
       if (propData && propData.stripeAccountId) {
         try {
           const account = await stripe.accounts.retrieve(propData.stripeAccountId);
@@ -115,9 +43,9 @@ app.get('/admin', async (req, res) => {
           stripeStatus = 'Ошибка проверки аккаунта';
         }
       }
-
+ 
       const currentCommission = propData.commissionPercent !== undefined ? propData.commissionPercent : 0;
-
+ 
       propertiesList += `
         <div style="background: #fff; padding: 15px; margin-bottom: 12px; border-radius: 8px; border: 1px solid #ddd; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
           <strong>Объект Smoobu ID:</strong> <span style="font-size: 16px; color: #0070f3;">${propId}</span><br>
@@ -134,11 +62,11 @@ app.get('/admin', async (req, res) => {
         </div>
       `;
     }
-
+ 
     const newLink = req.query.link;
     const newEmail = req.query.email;
     const newProp = req.query.prop;
-
+ 
     let linkBox = '';
     if (newLink) {
       linkBox = `
@@ -151,7 +79,7 @@ app.get('/admin', async (req, res) => {
         </div>
       `;
     }
-
+ 
     res.send(`
       <html>
         <head><title>Madeirabook Admin Dashboard</title><meta charset="utf-8"></head>
@@ -159,7 +87,7 @@ app.get('/admin', async (req, res) => {
           <h2 style="color: #333;">Панель управления Madeirabook</h2>
           
           ${linkBox}
-
+ 
           <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 25px;">
             <h3 style="margin-top: 0;">Привязать объект Smoobu к Stripe аккаунту владельца</h3>
             <form action="/admin/create-owner" method="POST">
@@ -176,7 +104,7 @@ app.get('/admin', async (req, res) => {
               <button type="submit" style="padding: 10px 20px; background: #635bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Сгенерировать ссылку</button>
             </form>
           </div>
-
+ 
           <h3 style="color: #333;">Список объектов в базе</h3>
           ${propertiesList || '<p style="color: #666;">Нет сохраненных объектов.</p>'}
         </body>
@@ -186,23 +114,21 @@ app.get('/admin', async (req, res) => {
     res.status(500).send(`Ошибка: ${e.message}`);
   }
 });
-
-// ==========================================
-// 4. СОЗДАНИЕ ВЛАДЕЛЬЦА (POST /admin/create-owner)
-// ==========================================
+ 
+// 2. Обработка подключения и выдача ссылки в админку
 app.post('/admin/create-owner', async (req, res) => {
   try {
     const { email, propertyId, commissionPercent } = req.body;
     if (!email || !propertyId) return res.status(400).send('Укажите email и ID объекта Smoobu');
-
+ 
     const cleanEmail = email.trim().toLowerCase();
     const cleanPropId = propertyId.trim();
     const parsedCommission = commissionPercent !== undefined ? Number(commissionPercent) : 0;
-
+ 
     const ownerKey = `owner:${cleanEmail}`;
     let ownerData = await kv.get(ownerKey);
     let stripeAccountId;
-
+ 
     if (ownerData && ownerData.stripeAccountId) {
       stripeAccountId = ownerData.stripeAccountId;
     } else {
@@ -216,32 +142,32 @@ app.post('/admin/create-owner', async (req, res) => {
       });
       stripeAccountId = account.id;
     }
-
-    const baseUrl = getBaseUrl(req);
-
+ 
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = `${protocol}://${host}`;
+ 
     await kv.set(`property:${cleanPropId}`, { 
       stripeAccountId, 
       ownerEmail: cleanEmail, 
       chargesEnabled: false,
       commissionPercent: parsedCommission 
     });
-
+ 
     const accountLink = await stripe.accountLinks.create({
       account: stripeAccountId,
       refresh_url: `${baseUrl}/admin/reauth?account_id=${stripeAccountId}&property_id=${encodeURIComponent(cleanPropId)}&email=${encodeURIComponent(cleanEmail)}&commission=${parsedCommission}`,
       return_url: `${baseUrl}/admin/success?account_id=${stripeAccountId}&property_id=${encodeURIComponent(cleanPropId)}&email=${encodeURIComponent(cleanEmail)}&commission=${parsedCommission}`,
       type: 'account_onboarding',
     });
-
+ 
     res.redirect(303, `/admin?link=${encodeURIComponent(accountLink.url)}&email=${encodeURIComponent(cleanEmail)}&prop=${encodeURIComponent(cleanPropId)}`);
   } catch (e) {
     res.status(400).send(`Ошибка создания аккаунта: ${e.message}`);
   }
 });
-
-// ==========================================
-// 5. СОХРАНЕНИЕ СВЯЗЕЙ ПРИ ВОЗВРАТЕ
-// ==========================================
+ 
+// 3. Сохранение связей в Vercel KV при успешном возврате владельца
 app.get('/admin/success', async (req, res) => {
   try {
     const { account_id, property_id, email, commission } = req.query;
@@ -251,14 +177,14 @@ app.get('/admin/success', async (req, res) => {
       
       const existingPropData = await kv.get(`property:${property_id}`) || {};
       const finalCommission = commission !== undefined ? Number(commission) : (existingPropData.commissionPercent ?? 0);
-
+ 
       await kv.set(`property:${property_id}`, { 
         stripeAccountId: account_id, 
         ownerEmail: email,
         chargesEnabled: account.charges_enabled,
         commissionPercent: finalCommission
       });
-
+ 
       const ownerKey = `owner:${email}`;
       let ownerData = await kv.get(ownerKey) || { stripeAccountId: account_id, properties: [] };
       
@@ -267,7 +193,7 @@ app.get('/admin/success', async (req, res) => {
       }
       await kv.set(ownerKey, ownerData);
     }
-
+ 
     res.send(`
       <div style="font-family: Arial; padding: 40px; text-align: center;">
         <h2 style="color: #28a745;">Владелец успешно завершил настройку!</h2>
@@ -279,39 +205,40 @@ app.get('/admin/success', async (req, res) => {
     res.send(`Аккаунт подключен, но произошла ошибка сохранения: ${e.message}. <a href="/admin">В админку</a>`);
   }
 });
-
-// ==========================================
-// 6. ОБНОВЛЕНИЕ ССЫЛКИ И ИЗМЕНЕНИЕ КОМИССИИ
-// ==========================================
+ 
+// 4. Автоматическое обновление просроченной ссылки
 app.get('/admin/reauth', async (req, res) => {
   try {
     const { account_id, property_id, email, commission } = req.query;
     if (!account_id) {
       return res.send('Ссылка устарела. <a href="/admin">Вернитесь в админку</a> для создания новой.');
     }
-
-    const baseUrl = getBaseUrl(req);
-
+ 
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = `${protocol}://${host}`;
+ 
     const accountLink = await stripe.accountLinks.create({
       account: account_id,
       refresh_url: `${baseUrl}/admin/reauth?account_id=${account_id}&property_id=${property_id || ''}&email=${email || ''}&commission=${commission || 0}`,
       return_url: `${baseUrl}/admin/success?account_id=${account_id}&property_id=${property_id || ''}&email=${email || ''}&commission=${commission || 0}`,
       type: 'account_onboarding',
     });
-
+ 
     res.redirect(303, accountLink.url);
   } catch (e) {
     res.status(400).send(`Ошибка обновления ссылки: ${e.message}`);
   }
 });
-
+ 
+// 5. Быстрое изменение процента комиссии для существующего объекта
 app.post('/admin/update-commission', async (req, res) => {
   try {
     const { propertyId, commissionPercent } = req.body;
     if (!propertyId || commissionPercent === undefined) {
       return res.status(400).send('Укажите propertyId и новый commissionPercent');
     }
-
+ 
     const cleanPropId = propertyId.trim();
     const propKey = `property:${cleanPropId}`;
     
@@ -319,37 +246,35 @@ app.post('/admin/update-commission', async (req, res) => {
     if (!propData) {
       return res.status(404).send('Объект не найден в базе');
     }
-
+ 
     propData.commissionPercent = Number(commissionPercent);
     await kv.set(propKey, propData);
-
+ 
     res.redirect(303, '/admin');
   } catch (e) {
     res.status(500).send(`Ошибка обновления комиссии: ${e.message}`);
   }
 });
-
-// ==========================================
-// 7. СОЗДАНИЕ БРОНИРОВАНИЯ И СЕССИИ STRIPE
-// ==========================================
+ 
+// 6. Создание бронирования в Smoobu + запуск Stripe Checkout (для виджета на сайте)
 app.post('/create-booking-and-pay', async (req, res) => {
   try {
     const { propertyId, arrivalDate, departureDate, guestEmail, guestName, price } = req.body;
     if (!propertyId || !arrivalDate || !departureDate) {
       return res.status(400).json({ error: 'Не указаны обязательные параметры (propertyId, arrivalDate, departureDate)' });
     }
-
+ 
     let finalPrice = price;
     let finalEmail = guestEmail || 'guest@madeirabook.com';
     let finalName = guestName || 'Guest';
-
+ 
     if (!finalPrice) {
       const ratesRes = await axios.get(`https://login.smoobu.com/api/rates?apartmentId=${propertyId}&arrivalDate=${arrivalDate}&departureDate=${departureDate}`, {
         headers: { 'Api-Key': process.env.SMOOBU_API_KEY, 'Content-Type': 'application/json' }
       });
       finalPrice = ratesRes.data.totalPrice || ratesRes.data.price || 100;
     }
-
+ 
     const smoobuRes = await axios.post('https://login.smoobu.com/api/reservations', {
       propertyId: Number(propertyId),
       arrivalDate,
@@ -362,18 +287,20 @@ app.post('/create-booking-and-pay', async (req, res) => {
     }, {
       headers: { 'Api-Key': process.env.SMOOBU_API_KEY, 'Content-Type': 'application/json' }
     });
-
+ 
     const smoobuBookingId = smoobuRes.data.id;
-
+ 
     const propData = await kv.get(`property:${propertyId}`);
     const commissionPercent = propData?.commissionPercent !== undefined ? Number(propData.commissionPercent) : 0;
     const stripeAccountId = propData?.stripeAccountId;
-
+ 
     const totalAmountInCents = Math.round(Number(finalPrice) * 100);
     const platformFee = Math.round(totalAmountInCents * (commissionPercent / 100));
-
-    const baseUrl = getBaseUrl(req);
-
+ 
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = `${protocol}://${host}`;
+ 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -396,36 +323,129 @@ app.post('/create-booking-and-pay', async (req, res) => {
       success_url: `${baseUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/booking-cancel`,
     });
-
+ 
     res.json({ url: session.url });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-app.get('/admin', (req, res) => {
-  res.status(200).send(`
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Madeirabook Admin Panel</title>
-      <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f6f8; padding: 40px; }
-        .card { background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); max-width: 600px; margin: 0 auto; }
-        h1 { font-size: 24px; color: #1a1a1a; margin-bottom: 10px; }
-        .status { display: inline-block; padding: 6px 12px; background: #e6f4ea; color: #137333; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 20px; }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <h1>Панель управления Madeirabook</h1>
-        <div class="status">● Бэкенд активен</div>
-        <p>Сервер Vercel работает. Stripe и Smoobu подключены.</p>
-      </div>
-    </body>
-    </html>
-  `);
+ 
+// 7. Создание платежной сессии (старый эндпоинт, если нужен отдельно)
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    const { propertyId, amount, smoobuBookingId } = req.body; 
+    if (!propertyId || !amount) {
+      return res.status(400).json({ error: 'Укажите propertyId и amount' });
+    }
+ 
+    const propData = await kv.get(`property:${propertyId}`);
+    if (!propData || !propData.stripeAccountId) {
+      return res.status(404).json({ error: 'Для этого объекта не найден подключенный Stripe аккаунт владельца' });
+    }
+ 
+    const stripeAccountId = propData.stripeAccountId;
+    
+    const account = await stripe.accounts.retrieve(stripeAccountId);
+    if (!account.charges_enabled) {
+      return res.status(400).json({ error: 'Владелец объекта еще не завершил верификацию в Stripe' });
+    }
+ 
+    const commissionPercent = propData.commissionPercent !== undefined ? Number(propData.commissionPercent) : 0;
+    
+    const totalAmountInCents = Number(amount);
+    const platformFee = Math.round(totalAmountInCents * (commissionPercent / 100));
+ 
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = `${protocol}://${host}`;
+ 
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'eur',
+          product_data: {
+            name: `Бронирование объекта ${propertyId}`,
+          },
+          unit_amount: totalAmountInCents,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      payment_intent_data: {
+        application_fee_amount: platformFee > 0 ? platformFee : undefined,
+        transfer_data: {
+          destination: stripeAccountId,
+        },
+        metadata: {
+          smoobuBookingId: smoobuBookingId || ''
+        }
+      },
+      success_url: `${baseUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/booking-cancel`,
+    });
+ 
+    res.json({ url: session.url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
-
+ 
+// 8. Вебхук от Stripe
+app.post('/webhook', async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+ 
+  try {
+    if (process.env.STRIPE_WEBHOOK_SECRET) {
+      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } else {
+      event = JSON.parse(req.body.toString());
+    }
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+ 
+  if (event.type === 'account.updated') {
+    const account = event.data.object;
+    const keys = await kv.keys('property:*');
+    for (const key of keys) {
+      const propData = await kv.get(key);
+      if (propData && propData.stripeAccountId === account.id) {
+        propData.chargesEnabled = account.charges_enabled;
+        await kv.set(key, propData);
+      }
+    }
+  }
+ 
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    
+    if (session.payment_intent) {
+      const paymentIntent = await stripe.paymentIntents.retrieve(session.payment_intent);
+      const smoobuBookingId = paymentIntent.metadata?.smoobuBookingId;
+ 
+      if (smoobuBookingId && process.env.SMOOBU_API_KEY) {
+        try {
+          await axios.put(
+            `https://login.smoobu.com/api/reservations/${smoobuBookingId}`, 
+            { paid: true },
+            {
+              headers: {
+                'Api-Key': process.env.SMOOBU_API_KEY,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          console.log(`Бронирование Smoobu ID ${smoobuBookingId} успешно обновлено на оплачено.`);
+        } catch (smoobuErr) {
+          console.error('Ошибка при обновлении бронирования в Smoobu:', smoobuErr.message);
+        }
+      }
+    }
+  }
+ 
+  res.json({ received: true });
+});
+ 
 module.exports = app;
